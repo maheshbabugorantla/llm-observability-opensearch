@@ -1,0 +1,54 @@
+# Entry pipeline: Receives OTLP traces from OTel Collector
+entry-pipeline:
+  delay: "100"
+  source:
+    otel_trace_source:
+      ssl: false
+      # Receives OTLP gRPC on port 21890 (default)
+  buffer:
+    bounded_blocking:
+      buffer_size: 25600
+      batch_size: 400
+  sink:
+    - pipeline:
+        name: raw-pipeline
+    - pipeline:
+        name: service-map-pipeline
+
+# Raw trace pipeline: Processes and indexes individual spans
+raw-pipeline:
+  source:
+    pipeline:
+      name: entry-pipeline
+  buffer:
+    bounded_blocking:
+      buffer_size: 25600
+      batch_size: 400
+  processor:
+    - otel_traces:
+    - otel_trace_raw:
+  sink:
+    - opensearch:
+        hosts: ["http://opensearch:9200"]
+        index_type: trace-analytics-raw
+        # Uses default index: otel-v1-apm-span-YYYY.MM.dd
+
+# Service map pipeline: Generates service dependency relationships
+service-map-pipeline:
+  delay: "100"
+  source:
+    pipeline:
+      name: entry-pipeline
+  buffer:
+    bounded_blocking:
+      buffer_size: 25600
+      batch_size: 400
+  processor:
+    - service_map:
+        # Extracts service relationships from trace data
+        window_duration: 180
+  sink:
+    - opensearch:
+        hosts: ["http://opensearch:9200"]
+        index_type: trace-analytics-service-map
+        # Uses default index: otel-v1-apm-service-map

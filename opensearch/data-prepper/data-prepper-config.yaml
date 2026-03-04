@@ -1,0 +1,3 @@
+ssl: false
+# Data Prepper server port for management API
+serverPort: 4900
