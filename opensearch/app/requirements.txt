@@ -1,0 +1,20 @@
+# Flask web framework
+Flask==3.0.0
+Werkzeug==3.0.1
+
+# LLM providers
+openai==1.54.3
+anthropic==0.39.0
+httpx>=0.24.0,<0.28.0
+
+# OpenTelemetry and Traceloop for observability
+traceloop-sdk>=0.20.0
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-exporter-otlp>=1.20.0
+opentelemetry-instrumentation-flask>=0.40b0
+
+# Additional utilities
+python-dotenv==1.0.0
+requests==2.31.0
+python-json-logger==2.0.7
