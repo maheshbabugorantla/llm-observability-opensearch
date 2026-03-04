@@ -11,6 +11,8 @@ from traceloop.sdk.decorators import workflow, task
 from dotenv import load_dotenv
 from pythonjsonlogger import jsonlogger
 
+from llm_cost_injector import inject_llm_cost_tracking
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -59,6 +61,10 @@ Traceloop.init(
     api_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318"),
     disable_batch=False
 )
+
+
+# Initialize LLM cost tracking
+inject_llm_cost_tracking()
 
 
 app = Flask(__name__)
