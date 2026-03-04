@@ -1,56 +1,47 @@
 #!/bin/bash
-# Set up custom LLM observability dashboards in OpenSearch Dashboards
+# Import LLM observability dashboards into OpenSearch Dashboards.
+# Imports: 1 index-pattern, 9 visualizations, 1 dashboard (11 saved objects total).
 
 set -e
 
-DASHBOARDS_HOST="http://localhost:5601"
-OS_HOST="http://localhost:9200"
-OSD_API="$DASHBOARDS_HOST/api"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DASHBOARDS_HOST="${DASHBOARDS_HOST:-http://localhost:5601}"
+NDJSON_FILE="$SCRIPT_DIR/../dashboards/llm-cost-dashboard.ndjson"
 
+# Wait for OpenSearch Dashboards to be ready
 echo "Waiting for OpenSearch Dashboards to be ready..."
 until curl -s "$DASHBOARDS_HOST/api/status" | grep -q '"overall"'; do
-    echo "  Waiting..."
+    echo "  Not ready yet, retrying in 5s..."
     sleep 5
 done
-echo "OpenSearch Dashboards is ready!"
-
-# 1. Create index pattern for trace spans
-echo "Creating index pattern for otel-v1-apm-span-*..."
-curl -s -X POST "$OSD_API/saved_objects/index-pattern/otel-v1-apm-span-*" \
-    -H "osd-xsrf: true" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "attributes": {
-            "title": "otel-v1-apm-span-*",
-            "timeFieldName": "startTime"
-        }
-    }' | python3 -m json.tool
+echo "OpenSearch Dashboards is ready."
 echo ""
 
-# 2. Create index pattern for service map
-echo "Creating index pattern for otel-v1-apm-service-map..."
-curl -s -X POST "$OSD_API/saved_objects/index-pattern/otel-v1-apm-service-map" \
+# Import all saved objects (index-pattern + visualizations + dashboard)
+echo "Importing LLM cost dashboard (11 saved objects)..."
+RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+    "$DASHBOARDS_HOST/api/saved_objects/_import?overwrite=true" \
     -H "osd-xsrf: true" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "attributes": {
-            "title": "otel-v1-apm-service-map",
-            "timeFieldName": "startTime"
-        }
-    }' | python3 -m json.tool
+    --form "file=@$NDJSON_FILE")
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+BODY=$(echo "$RESPONSE" | head -1)
+
+echo "Response (HTTP $HTTP_CODE):"
+echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
 echo ""
 
-# 3. Import custom dashboard if NDJSON file exists
-if [ -f "dashboards/llm-cost-dashboard.ndjson" ]; then
-    echo "Importing LLM cost dashboard..."
-    curl -s -X POST "$OSD_API/saved_objects/_import?overwrite=true" \
-        -H "osd-xsrf: true" \
-        --form file=@dashboards/llm-cost-dashboard.ndjson \
-        | python3 -m json.tool
+# Check success
+SUCCESS=$(echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('success','false'))" 2>/dev/null || echo "false")
+COUNT=$(echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('successCount',0))" 2>/dev/null || echo "0")
+
+if [ "$SUCCESS" = "True" ] || [ "$SUCCESS" = "true" ]; then
+    echo "Import successful: $COUNT objects imported."
     echo ""
+    echo "Dashboard URL: $DASHBOARDS_HOST/app/dashboards#/view/llm-cost-dashboard"
+    echo "Trace Analytics: $DASHBOARDS_HOST/app/observability-traces"
+else
+    echo "Import may have issues — check the response above."
+    echo "You can retry with: make dashboard"
+    exit 1
 fi
-
-echo "Dashboard setup complete!"
-echo "Access OpenSearch Dashboards at: $DASHBOARDS_HOST"
-echo "  - Trace Analytics: $DASHBOARDS_HOST/app/observability-traces"
-echo "  - Discover:        $DASHBOARDS_HOST/app/discover"
