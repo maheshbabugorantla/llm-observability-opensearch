@@ -1,5 +1,5 @@
 .PHONY: up down clean test test-multiagent logs status dashboard verify build \
-        logs-dataprepper logs-collector
+        logs-dataprepper logs-collector template
 
 # Start the full OpenSearch observability stack
 up: build
@@ -55,6 +55,10 @@ status:
 # Verify traces are being stored in OpenSearch
 verify:
 	bash scripts/verify-traces.sh
+
+# Apply numeric field type overrides (run before first span is indexed)
+template:
+	bash scripts/setup-index-template.sh
 
 # Import dashboards into OpenSearch Dashboards
 dashboard:
