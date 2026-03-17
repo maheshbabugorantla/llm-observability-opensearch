@@ -99,6 +99,78 @@ if [ "$HTTP_CODE" = "200" ]; then
     echo "  span.attributes.gen_ai@cost@provider       → keyword"
     echo "  span.attributes.gen_ai@cost@model_resolved → keyword"
     echo ""
+
+    # ----------------------------------------------------------------
+    # Fix pre-existing index created by Data Prepper ISM before this
+    # template was applied. Data Prepper creates otel-v1-apm-span-000001
+    # on startup using its own default template (all keyword). If that
+    # index already exists with the wrong field types, we must delete it
+    # and let Data Prepper recreate it using our priority-200 template.
+    # ----------------------------------------------------------------
+    echo "Checking whether existing span index needs to be recreated..."
+
+    EXISTING_TYPE=$(curl -s "$OS_HOST/otel-v1-apm-span-000001/_mapping" | python3 -c "
+import sys, json
+try:
+    m = json.load(sys.stdin)
+    idx = list(m.keys())[0]
+    attrs = (m[idx]['mappings']['properties']
+               .get('span', {}).get('properties', {})
+               .get('attributes', {}).get('properties', {}))
+    print(attrs.get('gen_ai@cost@total_usd', {}).get('type', 'missing'))
+except Exception:
+    print('missing')
+" 2>/dev/null)
+
+    if [ "$EXISTING_TYPE" = "float" ]; then
+        echo -e "${GREEN}Index mapping already correct (float). No action needed.${NC}"
+    elif [ "$EXISTING_TYPE" = "missing" ]; then
+        echo "No span index yet — template will apply when Data Prepper creates it."
+    else
+        echo -e "${YELLOW}Index has wrong field type ($EXISTING_TYPE). Recreating...${NC}"
+
+        # Find the actual backing index via the alias (handles any rollover name)
+        BACKING_INDEX=$(curl -s "$OS_HOST/_cat/aliases/otel-v1-apm-span?h=index" 2>/dev/null | head -1 | tr -d '[:space:]')
+        if [ -z "$BACKING_INDEX" ]; then
+            BACKING_INDEX="otel-v1-apm-span-000001"
+        fi
+
+        # Delete backing index (ISM alias goes with it)
+        curl -s -X DELETE "$OS_HOST/$BACKING_INDEX" > /dev/null
+        echo "  Deleted $BACKING_INDEX."
+
+        # Restart Data Prepper so its ISM re-creates the index using our template.
+        # Try docker restart; if unavailable, print a manual instruction.
+        if docker restart data-prepper > /dev/null 2>&1; then
+            echo "  Restarted data-prepper container."
+        else
+            echo -e "${YELLOW}  Could not restart data-prepper automatically.${NC}"
+            echo "  Run: docker restart data-prepper"
+            echo "  Then wait ~20 s before running 'make test'."
+        fi
+
+        # Wait for Data Prepper to come back and recreate the index
+        echo "  Waiting for Data Prepper to reinitialize..."
+        sleep 10
+        until curl -s "$OS_HOST/otel-v1-apm-span-000001/_mapping" | python3 -c "
+import sys, json
+m = json.load(sys.stdin)
+idx = list(m.keys())[0]
+attrs = (m[idx]['mappings']['properties']
+           .get('span', {}).get('properties', {})
+           .get('attributes', {}).get('properties', {}))
+t = attrs.get('gen_ai@cost@total_usd', {}).get('type', 'missing')
+if t == 'float':
+    sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; do
+            echo "  Waiting for index to be recreated..."
+            sleep 5
+        done
+
+        echo -e "${GREEN}  Index recreated with correct field types (float/long/keyword).${NC}"
+    fi
+    echo ""
     echo -e "${YELLOW}Next: run 'make test' to generate spans, then 'make dashboard'.${NC}"
 else
     echo -e "${RED}Template apply failed (HTTP $HTTP_CODE).${NC}"
