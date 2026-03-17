@@ -112,7 +112,7 @@ make verify
 open http://localhost:5601/app/observability-traces
 ```
 
-> **Order matters**: `make template` must run after `make up` but **before** `make test`. Once spans are indexed with `keyword` type, the type cannot be changed on existing indices — you would need to `make clean && make up && make template` to start fresh.
+> **Order matters**: `make template` must run after `make up` but **before** `make test`. If you accidentally run `make test` first, `make template` will detect the wrong mapping and self-heal by recreating the index — but you will need to re-run `make test` and `make dashboard` afterwards to repopulate with correctly-typed data.
 
 ---
 
@@ -212,11 +212,18 @@ LLM COST TRACKING SUCCESSFULLY ENABLED
 
 ### Why it's required
 
-Data Prepper ships with a default index template (priority 100) that maps all fields under `span.attributes.*` as `keyword`. Keyword fields cannot be used in numeric aggregations (sum, average) in OpenSearch Dashboards — cost and token visualizations will show 0 or fail to render.
+Data Prepper ships with a legacy index template that maps **all** fields under `span.attributes.*` as `keyword` via a catch-all dynamic rule. Keyword fields cannot be used in numeric aggregations (sum, average) in OpenSearch Dashboards — cost and token visualizations will show 0 or fail to render entirely.
 
 ### What `make template` does
 
-It applies a priority 200 index template that overrides 6 fields to their correct numeric types:
+`make template` runs `scripts/setup-index-template.sh`, which:
+
+1. **Waits** for Data Prepper's ISM to create the backing index (`otel-v1-apm-span-000001`)
+2. **Directly applies** explicit field type mappings to the index via `PUT /_mapping`
+
+Explicit property mappings always take precedence over dynamic template rules within the same index, so when the first span arrives, the correct types are used.
+
+Fields set to numeric types:
 
 | Field | Type |
 |---|---|
@@ -227,18 +234,23 @@ It applies a priority 200 index template that overrides 6 fields to their correc
 | `span.attributes.gen_ai@usage@output_tokens` | `long` |
 | `span.attributes.gen_ai@usage@total_tokens` | `long` |
 
+Fields set to `keyword` (required for Terms aggregations in OSD):
+
+| Field | Type |
+|---|---|
+| `span.attributes.gen_ai@system` | `keyword` |
+| `span.attributes.gen_ai@request@model` | `keyword` |
+| `span.attributes.gen_ai@response@model` | `keyword` |
+| `span.attributes.gen_ai@cost@provider` | `keyword` |
+| `span.attributes.gen_ai@cost@model_resolved` | `keyword` |
+
 ### When to run it
 
-**Before the first span is indexed.** Index templates only apply to newly created indices. Once a field is mapped as `keyword`, it stays that way until the index is deleted and recreated.
+**After `make up`, before `make test`.** The script must run before any spans are indexed. Data Prepper's ISM creates the backing index on startup (before any spans arrive), so the window is: index exists and is empty.
 
-If you forgot to run `make template` before `make test`:
+The script is **self-healing**: if it detects the index already has incorrect field types (e.g., you ran `make test` first by mistake), it automatically deletes the index, restarts the `data-prepper` container so ISM recreates it, then applies the correct mappings to the fresh empty index.
 
-```bash
-make clean        # Removes all containers and volumes
-make up           # Restart the stack
-make template     # Apply template BEFORE any spans
-make test         # Now generate traces
-```
+> **Why not just use an index template?** OpenSearch 2.17.1 composable index templates (`_index_template`) do not reliably override the field types set by Data Prepper's legacy `_template` dynamic rules. The only reliable approach is a direct `PUT /_mapping` on the index itself.
 
 ---
 
@@ -292,11 +304,19 @@ opensearch/
 
 ## Troubleshooting
 
-### Dashboard shows "No results" or cost panels show 0
+### Dashboard shows "No results" or cost panels show errors/0
 
-**Most likely cause**: `make template` was not run before `make test`.
+**Most likely cause**: `make template` was not run before `make test`, so cost fields were indexed as `keyword`.
 
-Cost fields were indexed as `keyword` and cannot be aggregated. Fix:
+Since `make template` is self-healing, just run it now — it will detect the wrong mapping, recreate the index, and fix the field types automatically:
+
+```bash
+make template     # detects + fixes wrong field types automatically
+make test         # re-generate spans with correct types
+make dashboard    # re-import dashboard and refresh field list
+```
+
+If that doesn't help, start completely fresh:
 
 ```bash
 make clean && make up && make template && make test && make dashboard
