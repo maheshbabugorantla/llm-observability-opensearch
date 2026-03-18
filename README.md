@@ -87,7 +87,7 @@ This is the OpenSearch port of the [Elastic APM LLM Observability demo](https://
 ```bash
 # 1. Clone and configure
 git clone https://github.com/maheshbabugorantla/llm-observability-opensearch
-cd llm-observability-opensearch/opensearch
+cd llm-observability-opensearch
 cp .env.example .env
 # Edit .env and add your API keys
 
@@ -257,7 +257,7 @@ The script is **self-healing**: if it detects the index already has incorrect fi
 ## Project Structure
 
 ```
-opensearch/
+llm-observability-opensearch/
 ├── app/
 │   ├── app.py                    # Flask application with OpenLLMetry decorators
 │   ├── llm_cost_injector.py      # CostEnrichingSpanExporter + LiteLLM pricing
