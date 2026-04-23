@@ -272,15 +272,18 @@ class CostEnrichingSpanExporter(SpanExporter):
         # Forward to the wrapped exporter
         return self.wrapped_exporter.export(spans)
 
-    def _is_llm_span(self, span: ReadableSpan) -> bool:
-        """
-        Check if a span represents an LLM API call.
+    # Newer Traceloop/OpenLLMetry drops gen_ai.system in favour of
+    # gen_ai.provider.name; fall back to model attributes as a last resort.
+    _LLM_MARKER_ATTRS = (
+        'gen_ai.system',
+        'gen_ai.provider.name',
+        'gen_ai.request.model',
+        'gen_ai.response.model',
+    )
 
-        LLM spans are identified by the presence of gen_ai.system attribute,
-        which is set by OpenTelemetry's LLM instrumentation packages.
-        """
+    def _is_llm_span(self, span: ReadableSpan) -> bool:
         attrs = span.attributes or {}
-        return 'gen_ai.system' in attrs
+        return any(k in attrs for k in self._LLM_MARKER_ATTRS)
 
     def _enrich_with_cost(self, span: ReadableSpan, pricing_db: LiteLLMPricingDatabase) -> ReadableSpan:
         """
@@ -304,8 +307,10 @@ class CostEnrichingSpanExporter(SpanExporter):
             # Model can be in response.model or request.model
             model = attrs.get('gen_ai.response.model') or attrs.get('gen_ai.request.model')
 
-            # Check for cached tokens (prompt caching feature)
-            cached_tokens = attrs.get('gen_ai.usage.cache_read_tokens', 0)
+            # Check for cached tokens (prompt caching feature).
+            # Newer semconv uses cache_read_input_tokens; older used cache_read_tokens.
+            cached_tokens = attrs.get('gen_ai.usage.cache_read_input_tokens',
+                                      attrs.get('gen_ai.usage.cache_read_tokens', 0))
 
             if not model or (input_tokens == 0 and output_tokens == 0):
                 # No token usage data, skip cost calculation
