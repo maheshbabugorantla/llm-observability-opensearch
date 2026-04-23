@@ -1,4 +1,4 @@
-# Eight Things That Broke Before My OpenSearch LLM Dashboard Worked
+# Ten Things That Broke Before My OpenSearch LLM Dashboard Worked
 
 **Stack**: OpenSearch 2.17.1 · Data Prepper 2.10.1 · OpenSearch Dashboards 2.17.1 · OpenLLMetry
 
@@ -288,6 +288,99 @@ The lesson for any automated verification: always navigate fresh to the dashboar
 
 ---
 
+## 9. The cost exporter never fired — Traceloop dropped `gen_ai.system`
+
+After getting the dashboard working, I ran a fresh stack weeks later. Spans were flowing, the index had documents, field types were correct. Every cost panel showed zero. The call count panel showed the right number, which meant the KQL filter was letting documents through — or so I thought.
+
+I checked the index directly:
+
+```bash
+curl -s "http://localhost:9200/otel-v1-apm-span-*/_search?size=1&sort=startTime:desc" \
+  | python3 -c 'import json,sys; h=json.load(sys.stdin)["hits"]["hits"][0]["_source"]; print({k:v for k,v in h.items() if "cost" in k})'
+# {}
+```
+
+No cost attributes on any span. The `CostEnrichingSpanExporter` was being initialized and reporting success, but `_enrich_with_cost()` was never running.
+
+The gating condition was in `_is_llm_span()`:
+
+```python
+def _is_llm_span(self, span):
+    attrs = span.attributes or {}
+    return 'gen_ai.system' in attrs   # ← this was the problem
+```
+
+None of the spans had `gen_ai.system`. The Traceloop SDK had been updated to follow the current OTel GenAI semantic conventions, which replaced `gen_ai.system` with `gen_ai.provider.name`. Indexed docs confirmed: `gen_ai@provider@name = "openai"` present, `gen_ai@system` absent on every document.
+
+The dashboard KQL filter had the same problem — `span.attributes.gen_ai@system: *` was matching zero documents. The call count panel had appeared correct only because it was counting all documents regardless of the filter (a misleading coincidence at that time range).
+
+**The fix — two parts:**
+
+Part 1: Update `_is_llm_span()` to recognize any current or legacy LLM marker:
+
+```python
+_LLM_MARKER_ATTRS = (
+    'gen_ai.system',           # older Traceloop
+    'gen_ai.provider.name',    # current Traceloop / OTel GenAI semconv
+    'gen_ai.request.model',
+    'gen_ai.response.model',
+)
+
+def _is_llm_span(self, span):
+    attrs = span.attributes or {}
+    return any(k in attrs for k in self._LLM_MARKER_ATTRS)
+```
+
+Part 2: Replace the dashboard KQL filter in all 9 visualization saved objects from `span.attributes.gen_ai@system: *` to `span.attributes.gen_ai@request@model: *`. The request model field is universally present on LLM spans regardless of SDK version.
+
+A third stale key surfaced in the same pass: `gen_ai.usage.cache_read_tokens` had been renamed to `gen_ai.usage.cache_read_input_tokens` in the current semconv. Updated with a fallback:
+
+```python
+cached_tokens = attrs.get('gen_ai.usage.cache_read_input_tokens',
+                           attrs.get('gen_ai.usage.cache_read_tokens', 0))
+```
+
+The lesson: OTel GenAI semantic conventions are still evolving. Any attribute name used as a detection signal (`gen_ai.system`) or a data key (`cache_read_tokens`) should be treated as potentially renamed in a future SDK version. Anchor detection on the most stable attributes (`gen_ai.request.model`) rather than the most descriptive ones.
+
+---
+
+## 10. Editing the Flask app source requires rebuilding the Docker image — restart is not enough
+
+After fixing `llm_cost_injector.py`, I ran:
+
+```bash
+docker compose restart flask-recipe-app
+```
+
+The container restarted. Logs showed "LLM COST TRACKING SUCCESSFULLY ENABLED". I ran `make test`. Still no cost attributes on spans.
+
+The Flask service is defined in `docker-compose.yml` as:
+
+```yaml
+flask-recipe-app:
+  build:
+    context: ./app
+    dockerfile: Dockerfile
+```
+
+There is no `volumes:` mount for the `app/` directory. The Python source is baked into the image at build time. `docker compose restart` only stops and starts the existing container from the cached image — the edited `.py` files on the host are never read. The "SUCCESSFULLY ENABLED" message in the logs came from the old code.
+
+**The correct command whenever any file in `app/` changes:**
+
+```bash
+docker compose build flask-recipe-app && docker compose up -d flask-recipe-app
+```
+
+This applies to `app.py`, `llm_cost_injector.py`, `requirements.txt`, or any other file under `app/`. The build step takes about 10 seconds since pip dependencies are cached by Docker's layer cache.
+
+Verify the new code is actually running by checking the startup log for a message that only appears in the updated version:
+
+```bash
+docker compose logs flask-recipe-app | grep -E "COST TRACKING|✓✓✓|✗✗✗"
+```
+
+---
+
 ## The working sequence
 
 After all of the above:
@@ -315,7 +408,8 @@ make dashboard    # import the NDJSON, run field refresh
 | `gen_ai.usage.input_tokens` | `span.attributes.gen_ai@usage@input_tokens` | `long` | Sum |
 | `gen_ai.usage.output_tokens` | `span.attributes.gen_ai@usage@output_tokens` | `long` | Sum |
 | `gen_ai.usage.total_tokens` | `span.attributes.gen_ai@usage@total_tokens` | `long` | Sum |
-| `gen_ai.system` | `span.attributes.gen_ai@system` | `keyword` | Terms |
+| `gen_ai.system` *(older Traceloop)* | `span.attributes.gen_ai@system` | `keyword` | Terms |
+| `gen_ai.provider.name` *(current Traceloop)* | `span.attributes.gen_ai@provider@name` | `keyword` | Terms |
 | `gen_ai.request.model` | `span.attributes.gen_ai@request@model` | `keyword` | Terms |
 | `gen_ai.response.model` | `span.attributes.gen_ai@response@model` | `keyword` | Terms |
 
@@ -334,3 +428,5 @@ make dashboard    # import the NDJSON, run field refresh
 | Field refresh stored garbage | `fields` value passed as raw array | Double-serialize: `json.dumps(json.dumps(fields))` pattern |
 | ISM alias disappeared | Deleting the backing index removes the alias | Always restart `data-prepper` after deleting the index; let ISM recreate both |
 | Browser showed errors after correct API fix | OSD cached stale field definitions in React state | Hard reload the browser after `make dashboard` |
+| Cost exporter fired but added no cost attributes | Traceloop dropped `gen_ai.system`; `_is_llm_span()` matched nothing | Detect on `gen_ai.provider.name` / `gen_ai.request.model` as well; update dashboard KQL filter to `gen_ai@request@model: *` |
+| Code change had no effect after container restart | Flask app is baked into the Docker image; `restart` uses the cached image | `docker compose build flask-recipe-app && docker compose up -d flask-recipe-app` |
