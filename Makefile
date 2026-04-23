@@ -22,7 +22,7 @@ down:
 
 # Stop and remove all data
 clean:
-	docker compose down -v
+	docker compose down -v --remove-orphans
 
 # Run API tests to generate traces
 test:
