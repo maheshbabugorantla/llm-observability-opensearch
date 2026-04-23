@@ -48,6 +48,7 @@ FIELD_MAPPINGS='{
                         "gen_ai@usage@output_tokens": { "type": "long" },
                         "gen_ai@usage@total_tokens":  { "type": "long" },
                         "gen_ai@system":              { "type": "keyword" },
+                        "gen_ai@provider@name":       { "type": "keyword" },
                         "gen_ai@request@model":       { "type": "keyword" },
                         "gen_ai@response@model":      { "type": "keyword" },
                         "gen_ai@cost@provider":       { "type": "keyword" },
@@ -195,7 +196,8 @@ echo "  span.attributes.gen_ai@usage@output_tokens → long"
 echo "  span.attributes.gen_ai@usage@total_tokens  → long"
 echo ""
 echo "Fields mapped as keyword (aggregatable in OSD Terms aggs):"
-echo "  span.attributes.gen_ai@system              → keyword"
+echo "  span.attributes.gen_ai@system              → keyword  (older Traceloop)"
+echo "  span.attributes.gen_ai@provider@name       → keyword  (current Traceloop/OTel semconv)"
 echo "  span.attributes.gen_ai@request@model       → keyword"
 echo "  span.attributes.gen_ai@response@model      → keyword"
 echo "  span.attributes.gen_ai@cost@provider       → keyword"
