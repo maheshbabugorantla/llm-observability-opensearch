@@ -84,6 +84,12 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# Node
+node_modules/
+
+# Playwright MCP session logs
+.playwright-mcp/
+
 # Temporary files
 *.tmp
 *.bak
