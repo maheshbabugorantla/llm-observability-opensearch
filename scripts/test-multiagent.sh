@@ -8,7 +8,7 @@
 # - Nested workflows (workflows within workflows)
 # - Decision trees (coordinator choices)
 # - Error handling and retries
-# - Cross-model traces (GPT-4 and Claude)
+# - Cross-model traces (GPT-5 and Claude)
 # ==============================================================================
 
 BASE_URL="http://localhost:5001"
