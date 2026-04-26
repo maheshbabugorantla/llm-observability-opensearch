@@ -15,11 +15,22 @@
 #      Fix: explicitly map them as `keyword`.
 #
 # HOW IT WORKS:
-#   OpenSearch composable index templates (_index_template) do NOT reliably
-#   override legacy template (_template) dynamic_templates in OSD 2.17.1.
-#   Instead, we directly PUT the explicit field mappings onto the index
-#   while it is still empty (no spans indexed yet). Explicit property
-#   mappings always win over dynamic_templates within the same index.
+#   Step 1 — Install a composable _index_template (priority 500). Per
+#   OpenSearch docs and live _simulate verification, when any composable
+#   template matches a new index the legacy _template is completely ignored
+#   (dynamic_templates included). This guarantees every future ISM rollover
+#   index gets the correct field types automatically.
+#
+#   Step 2 — Belt-and-suspenders: also PUT the explicit field mappings
+#   directly onto the current write index (handles the race window where
+#   Data Prepper already created the first index before our script ran).
+#   Explicit property mappings always win over dynamic_templates within
+#   the same index.
+#
+#   Step 3 — If the current write index already has gen_ai fields mapped
+#   as `keyword` (from a Data Prepper ISM rollover that happened before the
+#   composable template was installed), force a manual rollover. The new
+#   index is minted under the composable template with correct types.
 #
 # WHEN TO RUN:
 #   Part of `make up` — runs automatically after the stack starts.
@@ -28,7 +39,9 @@
 set -e
 
 OS_HOST="${OS_HOST:-http://localhost:9200}"
-BACKING_INDEX="otel-v1-apm-span-000001"
+BACKING_INDEX="otel-v1-apm-span-000001"   # first index ISM creates; used only for bootstrap wait
+ALIAS="otel-v1-apm-span"
+COMPOSABLE_TEMPLATE_NAME="otel-v1-apm-span-genai-overrides"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -62,8 +75,31 @@ FIELD_MAPPINGS='{
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+install_composable_template() {
+    local RESP
+    RESP=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+        "$OS_HOST/_index_template/$COMPOSABLE_TEMPLATE_NAME" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"index_patterns\": [\"otel-v1-apm-span-*\"],
+            \"priority\": 500,
+            \"template\": { \"mappings\": $FIELD_MAPPINGS }
+        }")
+    echo "$RESP"
+}
+
+get_write_index() {
+    # Returns the name of the current ISM write index for the alias.
+    # Falls back to BACKING_INDEX if alias doesn't exist yet (fresh stack).
+    local IDX
+    IDX=$(curl -s "$OS_HOST/_cat/aliases/$ALIAS?h=index,is_write_index" 2>/dev/null \
+          | awk '$2=="true"{print $1}' | head -1)
+    echo "${IDX:-$BACKING_INDEX}"
+}
+
 get_field_type() {
-    curl -s "$OS_HOST/$BACKING_INDEX/_mapping" | python3 -c "
+    local IDX="${1:-$BACKING_INDEX}"
+    curl -s "$OS_HOST/$IDX/_mapping" | python3 -c "
 import sys, json
 try:
     m = json.load(sys.stdin)
@@ -78,42 +114,49 @@ except Exception:
 }
 
 get_doc_count() {
-    curl -s "$OS_HOST/$BACKING_INDEX/_count" | \
+    local IDX="${1:-$BACKING_INDEX}"
+    curl -s "$OS_HOST/$IDX/_count" | \
         python3 -c "import sys,json; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0"
 }
 
 apply_mappings() {
+    local IDX="${1:-$BACKING_INDEX}"
     local RESP
-    RESP=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$OS_HOST/$BACKING_INDEX/_mapping" \
+    RESP=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$OS_HOST/$IDX/_mapping" \
         -H "Content-Type: application/json" \
         -d "$FIELD_MAPPINGS")
     echo "$RESP"
 }
 
-delete_and_restart() {
-    # Find actual backing index (handles rollover)
-    local IDX
-    IDX=$(curl -s "$OS_HOST/_cat/aliases/otel-v1-apm-span?h=index" 2>/dev/null | head -1 | tr -d '[:space:]')
-    [ -z "$IDX" ] && IDX="$BACKING_INDEX"
-
-    curl -s -X DELETE "$OS_HOST/$IDX" > /dev/null
-    echo "  Deleted $IDX."
-
-    if docker restart data-prepper > /dev/null 2>&1; then
-        echo "  Restarted data-prepper container."
-    else
-        echo -e "${YELLOW}  Could not restart data-prepper automatically.${NC}"
-        echo "  Run: docker restart data-prepper"
-        echo "  Then wait ~20 s before running 'make test'."
-    fi
+force_rollover() {
+    # Force ISM to advance the write index. The new index is created under
+    # the composable template already installed, so it gets correct types.
+    local RESP
+    RESP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        "$OS_HOST/$ALIAS/_rollover" \
+        -H "Content-Type: application/json" \
+        -d '{"conditions": {"max_age": "1s"}}')
+    echo "$RESP"
 }
 
 wait_for_index() {
-    # Poll until the backing index exists (max 90 s)
+    # Poll until BACKING_INDEX exists (max 90 s) — used on fresh stacks.
     for i in $(seq 1 30); do
         STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$OS_HOST/$BACKING_INDEX/_mapping")
         [ "$STATUS" = "200" ] && return 0
         echo "  Waiting for Data Prepper to create the index... (${i}0s)"
+        sleep 3
+    done
+    return 1
+}
+
+wait_for_new_write_index() {
+    # Poll until the alias's write index changes from the given name (max 30 s).
+    local OLD_IDX="$1"
+    for i in $(seq 1 10); do
+        local NEW_IDX
+        NEW_IDX=$(get_write_index)
+        [ "$NEW_IDX" != "$OLD_IDX" ] && echo "$NEW_IDX" && return 0
         sleep 3
     done
     return 1
@@ -129,7 +172,20 @@ done
 echo -e "${GREEN}OpenSearch is ready.${NC}"
 echo ""
 
-# ── Step 2: wait for Data Prepper to create the backing index ─────────────────
+# ── Step 2: install composable index template ─────────────────────────────────
+
+echo "Installing composable index template '$COMPOSABLE_TEMPLATE_NAME'..."
+echo "  (priority 500 → shadows Data Prepper's legacy _template for all future indices)"
+HTTP=$(install_composable_template)
+if [ "$HTTP" = "200" ]; then
+    echo -e "${GREEN}Composable template installed. All future rollover indices will have correct types.${NC}"
+else
+    echo -e "${RED}Failed to install composable template (HTTP $HTTP).${NC}"
+    exit 1
+fi
+echo ""
+
+# ── Step 3: wait for Data Prepper to create the backing index ─────────────────
 
 echo "Waiting for Data Prepper to create the span index..."
 if ! wait_for_index; then
@@ -140,19 +196,20 @@ fi
 echo -e "${GREEN}Index $BACKING_INDEX exists.${NC}"
 echo ""
 
-# ── Step 3: check current field type and fix ──────────────────────────────────
+# ── Step 4: check current write index and fix if needed ──────────────────────
 
-echo "Checking field type for gen_ai@cost@total_usd..."
-FIELD_TYPE=$(get_field_type)
+WRITE_IDX=$(get_write_index)
+echo "Current write index: $WRITE_IDX"
+echo "Checking field type for gen_ai@cost@total_usd on $WRITE_IDX..."
+FIELD_TYPE=$(get_field_type "$WRITE_IDX")
 
 if [ "$FIELD_TYPE" = "float" ]; then
     echo -e "${GREEN}Field types already correct (float/long/keyword). Nothing to do.${NC}"
 
 elif [ "$FIELD_TYPE" = "missing" ]; then
-    # Index exists but gen_ai fields not yet mapped → PUT explicit types now,
-    # before any span is indexed. Explicit property wins over dynamic_template.
-    echo "Fields not yet mapped. Applying explicit float/long/keyword types..."
-    HTTP=$(apply_mappings)
+    # Write index exists but gen_ai fields not yet mapped → PUT explicit types now.
+    echo "Fields not yet mapped. Applying explicit float/long/keyword types to $WRITE_IDX..."
+    HTTP=$(apply_mappings "$WRITE_IDX")
     if [ "$HTTP" = "200" ]; then
         echo -e "${GREEN}Field types applied successfully.${NC}"
     else
@@ -161,28 +218,61 @@ elif [ "$FIELD_TYPE" = "missing" ]; then
     fi
 
 else
-    # Fields already mapped (probably as keyword from a previous data ingest).
-    # Must delete and recreate the index so we can apply the correct mapping.
-    DOC_COUNT=$(get_doc_count)
-    echo -e "${YELLOW}Fields mapped as '$FIELD_TYPE' ($DOC_COUNT docs). Recreating index...${NC}"
+    # Write index has gen_ai fields already mapped as `keyword` — happens when an
+    # ISM rollover created a new backing index before the composable template was
+    # installed. We can't change existing field types in place; force a rollover to
+    # mint a fresh index that picks up the now-installed composable template.
+    #
+    # IMPORTANT: after rollover, also DELETE the bad-typed index. Leaving it in
+    # place causes _field_caps to report a type conflict (float vs keyword for the
+    # same field across indices), which OSD treats as "field invalid for Sum
+    # aggregation" even on indices with correct types.
+    DOC_COUNT=$(get_doc_count "$WRITE_IDX")
+    echo -e "${YELLOW}Write index '$WRITE_IDX' has fields mapped as '$FIELD_TYPE' ($DOC_COUNT docs).${NC}"
+    echo "  Forcing manual rollover to create a fresh index with correct types..."
 
-    delete_and_restart
-
-    echo "  Waiting for Data Prepper to recreate the index..."
-    sleep 8
-    if ! wait_for_index; then
-        echo -e "${RED}Index not recreated within 90 s.${NC}"
+    HTTP=$(force_rollover)
+    if [ "$HTTP" != "200" ]; then
+        echo -e "${RED}Rollover failed (HTTP $HTTP).${NC}"
+        echo "  Try: curl -X POST \"$OS_HOST/$ALIAS/_rollover\" -H 'Content-Type: application/json' -d '{\"conditions\":{\"max_age\":\"1s\"}}'"
         exit 1
     fi
 
-    # Apply explicit mappings to the fresh empty index
-    echo "  Applying explicit float/long/keyword types to new index..."
-    HTTP=$(apply_mappings)
-    if [ "$HTTP" = "200" ]; then
-        echo -e "${GREEN}  Field types applied successfully.${NC}"
-    else
-        echo -e "${RED}  PUT _mapping failed (HTTP $HTTP).${NC}"
+    echo "  Rollover succeeded. Waiting for new write index to appear..."
+    NEW_WRITE_IDX=$(wait_for_new_write_index "$WRITE_IDX")
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}New write index did not appear within 30 s.${NC}"
         exit 1
+    fi
+    echo -e "${GREEN}New write index: $NEW_WRITE_IDX${NC}"
+
+    # Belt-and-suspenders: also apply mappings to the new index explicitly.
+    FIELD_TYPE2=$(get_field_type "$NEW_WRITE_IDX")
+    if [ "$FIELD_TYPE2" = "missing" ]; then
+        echo "  Applying explicit float/long/keyword types to $NEW_WRITE_IDX..."
+        HTTP=$(apply_mappings "$NEW_WRITE_IDX")
+        if [ "$HTTP" = "200" ]; then
+            echo -e "${GREEN}  Field types applied successfully.${NC}"
+        else
+            echo -e "${RED}  PUT _mapping failed (HTTP $HTTP).${NC}"
+            exit 1
+        fi
+    elif [ "$FIELD_TYPE2" = "float" ]; then
+        echo -e "${GREEN}  New index already has correct types (composable template applied). Done.${NC}"
+    else
+        echo -e "${RED}  New index '$NEW_WRITE_IDX' still has wrong type '$FIELD_TYPE2'. This is unexpected.${NC}"
+        exit 1
+    fi
+
+    # Delete the old bad-typed index so _field_caps across otel-v1-apm-span-*
+    # no longer reports a float/keyword conflict for cost/token fields.
+    echo "  Deleting '$WRITE_IDX' (keyword-typed cost fields cause _field_caps conflicts)..."
+    DEL_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$OS_HOST/$WRITE_IDX")
+    if [ "$DEL_HTTP" = "200" ]; then
+        echo -e "${GREEN}  Deleted '$WRITE_IDX'. Type conflict resolved.${NC}"
+    else
+        echo -e "${YELLOW}  Could not delete '$WRITE_IDX' (HTTP $DEL_HTTP). Dashboard may still show type errors.${NC}"
+        echo "  Manual fix: curl -X DELETE $OS_HOST/$WRITE_IDX"
     fi
 fi
 
