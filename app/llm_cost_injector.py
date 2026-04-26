@@ -612,7 +612,7 @@ def inject_llm_cost_tracking(
         logger.info("=" * 70)
         logger.info(f"Loaded pricing for {len(pricing_db.pricing)} models")
         logger.info("All LLM API calls will now include cost data in traces")
-        logger.info("Cost attributes will appear in Elastic APM as:")
+        logger.info("Cost attributes will appear in Opensearch as:")
         logger.info("  - labels.gen_ai_cost_total_usd")
         logger.info("  - labels.gen_ai_cost_input_usd")
         logger.info("  - labels.gen_ai_cost_output_usd")
