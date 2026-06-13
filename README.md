@@ -70,9 +70,11 @@ This is the OpenSearch port of the [Elastic APM LLM Observability demo](https://
 | OTel Collector | `otel/opentelemetry-collector-contrib:0.91.0` | 4317 (gRPC), 4318 (HTTP) |
 | Flask App | local build | 5001 |
 
-> **Cost warning**: Running `make test` and `make test-multiagent` makes real API calls to OpenAI and Anthropic. Typical cost per full test run is under $0.10.
+> [!WARNING]
+> Running `make test` and `make test-multiagent` makes real API calls to OpenAI and Anthropic. Typical cost per full test run is under $0.10.
 
-> **Security warning**: This stack runs with `DISABLE_SECURITY_PLUGIN=true` and binds all service ports to `0.0.0.0`. OpenSearch (9200), Dashboards (5601), and Data Prepper (4900) accept unauthenticated connections with no TLS. This is intentional for local development only — **never deploy this configuration to a cloud VM or any host with a public IP without adding firewall rules or enabling the OpenSearch security plugin.**
+> [!CAUTION]
+> This stack runs with `DISABLE_SECURITY_PLUGIN=true` and binds all service ports to `0.0.0.0`. OpenSearch (9200), Dashboards (5601), and Data Prepper (4900) accept unauthenticated connections with no TLS. This is intentional for local development only — **never deploy this configuration to a cloud VM or any host with a public IP without adding firewall rules or enabling the OpenSearch security plugin.**
 
 ---
 
@@ -114,7 +116,8 @@ make verify
 open http://localhost:5601/app/dashboards#/view/llm-cost-dashboard
 ```
 
-> **Order matters**: `make template` must run after `make up` but **before** `make test`. If you accidentally run `make test` first, `make template` will detect the wrong mapping and self-heal by recreating the index — but you will need to re-run `make test` and `make dashboard` afterwards to repopulate with correctly-typed data.
+> [!IMPORTANT]
+> `make template` must run after `make up` but **before** `make test`. If you accidentally run `make test` first, `make template` will detect the wrong mapping and self-heal by recreating the index — but you will need to re-run `make test` and `make dashboard` afterwards to repopulate with correctly-typed data.
 
 ---
 
@@ -183,7 +186,8 @@ Every LLM span includes these attributes, visible in Trace Analytics and Discove
 | `gen_ai.cost.model_resolved` | `span.attributes.gen_ai@cost@model_resolved` | Model used for pricing lookup |
 | `gen_ai.cost.provider` | `span.attributes.gen_ai@cost@provider` | Provider used for pricing |
 
-> **Note**: Data Prepper replaces dots (`.`) with `@` when flattening OTel span attributes into the indexed document. All queries and dashboard aggregations use `@` notation.
+> [!NOTE]
+> Data Prepper replaces dots (`.`) with `@` when flattening OTel span attributes into the indexed document. All queries and dashboard aggregations use `@` notation.
 
 ---
 
@@ -252,7 +256,8 @@ Fields set to `keyword` (required for Terms aggregations in OSD):
 
 The script is **self-healing**: if it detects the index already has incorrect field types (e.g., you ran `make test` first by mistake), it automatically deletes the index, restarts the `data-prepper` container so ISM recreates it, then applies the correct mappings to the fresh empty index.
 
-> **Why not just use an index template?** OpenSearch 2.17.1 composable index templates (`_index_template`) do not reliably override the field types set by Data Prepper's legacy `_template` dynamic rules. The only reliable approach is a direct `PUT /_mapping` on the index itself.
+> [!NOTE]
+> OpenSearch 2.17.1 composable index templates (`_index_template`) do not reliably override the field types set by Data Prepper's legacy `_template` dynamic rules. The only reliable approach is a direct `PUT /_mapping` on the index itself.
 
 ---
 
