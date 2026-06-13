@@ -44,12 +44,15 @@ curl -s "$OS_HOST/otel-v1-apm-span-*/_search" \
         "size": 1,
         "query": {
             "bool": {
-                "must": [
+                "should": [
+                    { "exists": { "field": "span.attributes.gen_ai@provider@name" } },
                     { "exists": { "field": "span.attributes.gen_ai@system" } }
-                ]
+                ],
+                "minimum_should_match": 1
             }
         },
         "_source": [
+            "span.attributes.gen_ai@provider@name",
             "span.attributes.gen_ai@system",
             "span.attributes.gen_ai@request@model",
             "span.attributes.gen_ai@usage@input_tokens",

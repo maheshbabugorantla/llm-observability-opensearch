@@ -341,7 +341,7 @@ def generate_recipe_endpoint():
             "error_type": type(e).__name__,
             "remote_addr": request.remote_addr
         })
-        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/recipe/compare", methods=["POST"])
@@ -395,25 +395,19 @@ def compare_recipes_endpoint():
             "servings": servings
         })
 
-        # Generate with OpenAI
-        openai_result = generate_recipe(
-            provider="openai",
+        # Generate with both providers in parallel
+        kwargs = dict(
             dish_name=dish_name,
             cuisine_type=cuisine_type,
             dietary_restrictions=dietary_restrictions,
             servings=servings,
-            temperature=temperature
+            temperature=temperature,
         )
-
-        # Generate with Claude
-        claude_result = generate_recipe(
-            provider="claude",
-            dish_name=dish_name,
-            cuisine_type=cuisine_type,
-            dietary_restrictions=dietary_restrictions,
-            servings=servings,
-            temperature=temperature
-        )
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_openai = executor.submit(generate_recipe, provider="openai", **kwargs)
+            future_claude = executor.submit(generate_recipe, provider="claude", **kwargs)
+            openai_result = future_openai.result()
+            claude_result = future_claude.result()
 
         logger.info("Recipe comparison completed successfully", extra={
             "endpoint": "/recipe/compare",
@@ -438,7 +432,7 @@ def compare_recipes_endpoint():
             "error_type": type(e).__name__,
             "remote_addr": request.remote_addr
         })
-        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/recipe/batch", methods=["POST"])
@@ -499,6 +493,17 @@ def batch_generate_endpoint():
             })
             return jsonify({"error": "Missing required field: recipes"}), 400
 
+        MAX_BATCH = 20
+        if len(recipes_input) > MAX_BATCH:
+            logger.warning("Invalid request: batch size exceeds limit", extra={
+                "endpoint": "/recipe/batch",
+                "provider": provider,
+                "requested": len(recipes_input),
+                "limit": MAX_BATCH,
+                "remote_addr": request.remote_addr
+            })
+            return jsonify({"error": f"Batch size {len(recipes_input)} exceeds maximum of {MAX_BATCH}"}), 400
+
         logger.info("Starting batch recipe generation", extra={
             "endpoint": "/recipe/batch",
             "provider": provider,
@@ -548,7 +553,7 @@ def batch_generate_endpoint():
             "error_type": type(e).__name__,
             "remote_addr": request.remote_addr
         })
-        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # ============================================================================
@@ -1232,7 +1237,7 @@ def design_restaurant_menu():
             "duration_seconds": round(duration, 2),
             "remote_addr": request.remote_addr
         })
-        return jsonify({"error": "Menu design failed", "details": str(e)}), 500
+        return jsonify({"error": "Menu design failed"}), 500
 
 
 if __name__ == "__main__":

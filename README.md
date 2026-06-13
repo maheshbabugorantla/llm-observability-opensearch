@@ -72,6 +72,8 @@ This is the OpenSearch port of the [Elastic APM LLM Observability demo](https://
 
 > **Cost warning**: Running `make test` and `make test-multiagent` makes real API calls to OpenAI and Anthropic. Typical cost per full test run is under $0.10.
 
+> **Security warning**: This stack runs with `DISABLE_SECURITY_PLUGIN=true` and binds all service ports to `0.0.0.0`. OpenSearch (9200), Dashboards (5601), and Data Prepper (4900) accept unauthenticated connections with no TLS. This is intentional for local development only — **never deploy this configuration to a cloud VM or any host with a public IP without adding firewall rules or enabling the OpenSearch security plugin.**
+
 ---
 
 ## Quick Start
