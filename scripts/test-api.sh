@@ -43,7 +43,7 @@ make_request() {
     fi
 
     http_code=$(echo "$raw" | tail -1)
-    response=$(echo "$raw" | head -n -1)
+    response=$(echo "$raw" | sed '$d')
 
     echo -e "${YELLOW}Response:${NC}"
     echo "$response" | $JQ_CMD

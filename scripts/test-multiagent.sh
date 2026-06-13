@@ -52,7 +52,7 @@ test_menu_design() {
         -d "$payload")
 
     http_code=$(echo "$raw" | tail -1)
-    response=$(echo "$raw" | head -n -1)
+    response=$(echo "$raw" | sed '$d')
 
     if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
         echo -e "${GREEN}✓ Response received${NC}"

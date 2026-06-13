@@ -25,7 +25,7 @@ RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
     --form "file=@$NDJSON_FILE")
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-BODY=$(echo "$RESPONSE" | head -n -1)
+BODY=$(echo "$RESPONSE" | sed '$d')
 
 echo "Response (HTTP $HTTP_CODE):"
 echo "$BODY" | python3 -m json.tool 2>/dev/null || echo "$BODY"
