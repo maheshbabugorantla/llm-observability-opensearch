@@ -404,10 +404,9 @@ def compare_recipes_endpoint():
             servings=servings,
             temperature=temperature,
         )
-        ctx = contextvars.copy_context()
         with ThreadPoolExecutor(max_workers=2) as executor:
-            future_openai = executor.submit(ctx.run, generate_recipe, provider="openai", **kwargs)
-            future_claude = executor.submit(ctx.run, generate_recipe, provider="claude", **kwargs)
+            future_openai = executor.submit(contextvars.copy_context().run, generate_recipe, provider="openai", **kwargs)
+            future_claude = executor.submit(contextvars.copy_context().run, generate_recipe, provider="claude", **kwargs)
             openai_result = future_openai.result()
             claude_result = future_claude.result()
 
@@ -964,11 +963,10 @@ def parallel_agent_research(menu_plan, dietary_requirements, budget):
             return "Classic pairing principles"
 
     # Execute in parallel, propagating OTel trace context into each thread
-    ctx = contextvars.copy_context()
     with ThreadPoolExecutor(max_workers=3) as executor:
-        future_chef = executor.submit(ctx.run, research_chef_courses)
-        future_nutrition = executor.submit(ctx.run, research_nutrition_requirements)
-        future_wine = executor.submit(ctx.run, research_wine_strategy)
+        future_chef = executor.submit(contextvars.copy_context().run, research_chef_courses)
+        future_nutrition = executor.submit(contextvars.copy_context().run, research_nutrition_requirements)
+        future_wine = executor.submit(contextvars.copy_context().run, research_wine_strategy)
 
         # Wait for all to complete
         chef_recipes = future_chef.result()
