@@ -109,7 +109,7 @@ make dashboard
 make verify
 
 # 7. Open dashboards
-open http://localhost:5601/app/observability-traces
+open http://localhost:5601/app/dashboards#/view/llm-cost-dashboard
 ```
 
 > **Order matters**: `make template` must run after `make up` but **before** `make test`. If you accidentally run `make test` first, `make template` will detect the wrong mapping and self-heal by recreating the index — but you will need to re-run `make test` and `make dashboard` afterwards to repopulate with correctly-typed data.
