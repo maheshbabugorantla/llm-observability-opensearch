@@ -47,13 +47,14 @@ test_menu_design() {
     echo ""
 
     echo -e "${YELLOW}Sending request...${NC}"
-    response=$(curl -s -X POST "${BASE_URL}/menu/design" \
+    raw=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/menu/design" \
         -H "Content-Type: application/json" \
         -d "$payload")
 
-    http_code=$?
+    http_code=$(echo "$raw" | tail -1)
+    response=$(echo "$raw" | head -n -1)
 
-    if [ $http_code -eq 0 ]; then
+    if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
         echo -e "${GREEN}✓ Response received${NC}"
         echo "$response" | jq '{
             success: .success,

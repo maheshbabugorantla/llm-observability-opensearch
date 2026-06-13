@@ -9,7 +9,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-OS_HOST="http://localhost:9200"
+OS_HOST="${OS_HOST:-http://localhost:9200}"
 
 echo -e "${BLUE}================================${NC}"
 echo -e "${BLUE}Trace Verification${NC}"

@@ -197,8 +197,9 @@ class LiteLLMPricingDatabase:
 
         pricing = self.pricing[resolved_model]
 
-        # Calculate regular input cost (excluding cached tokens)
-        regular_input_tokens = input_tokens - cached_tokens
+        # Calculate regular input cost (excluding cached tokens).
+        # Clamp at 0 to guard against instrumentation reporting cached_tokens > input_tokens.
+        regular_input_tokens = max(0, input_tokens - cached_tokens)
         input_cost = (regular_input_tokens / 1_000_000) * pricing['input_per_million']
 
         # Add cache read cost if applicable
@@ -570,8 +571,8 @@ def inject_llm_cost_tracking(
     Inject LLM cost tracking into Traceloop-instrumented application.
 
     Call this immediately after Traceloop.init() to automatically add cost
-    tracking to all LLM API calls. The cost data will appear in Elastic APM
-    as labels.gen_ai_cost_* attributes.
+    tracking to all LLM API calls. The cost data will appear in OpenSearch
+    as span.attributes.gen_ai@cost@* fields.
 
     Args:
         cache_path: Where to cache LiteLLM pricing data locally
@@ -612,12 +613,12 @@ def inject_llm_cost_tracking(
         logger.info("=" * 70)
         logger.info(f"Loaded pricing for {len(pricing_db.pricing)} models")
         logger.info("All LLM API calls will now include cost data in traces")
-        logger.info("Cost attributes will appear in Opensearch as:")
-        logger.info("  - labels.gen_ai_cost_total_usd")
-        logger.info("  - labels.gen_ai_cost_input_usd")
-        logger.info("  - labels.gen_ai_cost_output_usd")
-        logger.info("  - labels.gen_ai_cost_provider")
-        logger.info("  - labels.gen_ai_cost_model_resolved")
+        logger.info("Cost attributes will appear in OpenSearch as:")
+        logger.info("  - span.attributes.gen_ai@cost@total_usd")
+        logger.info("  - span.attributes.gen_ai@cost@input_usd")
+        logger.info("  - span.attributes.gen_ai@cost@output_usd")
+        logger.info("  - span.attributes.gen_ai@cost@provider")
+        logger.info("  - span.attributes.gen_ai@cost@model_resolved")
         logger.info("=" * 70)
     else:
         logger.error("")

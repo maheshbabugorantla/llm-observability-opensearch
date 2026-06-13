@@ -16,10 +16,9 @@
 #
 # HOW IT WORKS:
 #   Step 1 — Install a composable _index_template (priority 500). Per
-#   OpenSearch docs and live _simulate verification, when any composable
-#   template matches a new index the legacy _template is completely ignored
-#   (dynamic_templates included). This guarantees every future ISM rollover
-#   index gets the correct field types automatically.
+#   OpenSearch docs this should shadow the legacy _template for new indices,
+#   but in OpenSearch 2.17.1 the override is best-effort (hence Step 2).
+#   In practice it covers ISM rollover indices created after this script runs.
 #
 #   Step 2 — Belt-and-suspenders: also PUT the explicit field mappings
 #   directly onto the current write index (handles the race window where
@@ -33,8 +32,8 @@
 #   index is minted under the composable template with correct types.
 #
 # WHEN TO RUN:
-#   Part of `make up` — runs automatically after the stack starts.
-#   Must complete before `make test` (before any spans are indexed).
+#   Via `make template` — must run after `make up` but before `make test`
+#   (i.e. before any spans are indexed into the alias).
 
 set -e
 
@@ -177,7 +176,7 @@ echo ""
 echo "Installing composable index template '$COMPOSABLE_TEMPLATE_NAME'..."
 echo "  (priority 500 → shadows Data Prepper's legacy _template for all future indices)"
 HTTP=$(install_composable_template)
-if [ "$HTTP" = "200" ]; then
+if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
     echo -e "${GREEN}Composable template installed. All future rollover indices will have correct types.${NC}"
 else
     echo -e "${RED}Failed to install composable template (HTTP $HTTP).${NC}"
@@ -266,13 +265,21 @@ else
 
     # Delete the old bad-typed index so _field_caps across otel-v1-apm-span-*
     # no longer reports a float/keyword conflict for cost/token fields.
-    echo "  Deleting '$WRITE_IDX' (keyword-typed cost fields cause _field_caps conflicts)..."
-    DEL_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$OS_HOST/$WRITE_IDX")
-    if [ "$DEL_HTTP" = "200" ]; then
-        echo -e "${GREEN}  Deleted '$WRITE_IDX'. Type conflict resolved.${NC}"
+    # Only delete if the index is empty — skip if spans have already been indexed.
+    DOC_COUNT=$(curl -s "$OS_HOST/$WRITE_IDX/_count" | python3 -c "import sys,json; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo "0")
+    if [ "$DOC_COUNT" -gt 0 ]; then
+        echo -e "${YELLOW}  Skipping deletion: '$WRITE_IDX' contains $DOC_COUNT document(s).${NC}"
+        echo "  The _field_caps conflict will persist for the current index but won't affect new ones."
+        echo "  To fully resolve: drain spans, then run: curl -X DELETE $OS_HOST/$WRITE_IDX"
     else
-        echo -e "${YELLOW}  Could not delete '$WRITE_IDX' (HTTP $DEL_HTTP). Dashboard may still show type errors.${NC}"
-        echo "  Manual fix: curl -X DELETE $OS_HOST/$WRITE_IDX"
+        echo "  Deleting '$WRITE_IDX' (empty, keyword-typed cost fields cause _field_caps conflicts)..."
+        DEL_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$OS_HOST/$WRITE_IDX")
+        if [ "$DEL_HTTP" = "200" ]; then
+            echo -e "${GREEN}  Deleted '$WRITE_IDX'. Type conflict resolved.${NC}"
+        else
+            echo -e "${YELLOW}  Could not delete '$WRITE_IDX' (HTTP $DEL_HTTP). Dashboard may still show type errors.${NC}"
+            echo "  Manual fix: curl -X DELETE $OS_HOST/$WRITE_IDX"
+        fi
     fi
 fi
 
